@@ -1,0 +1,7 @@
+{
+  "name": "test-build-project",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "mkdir dist; echo '<h1>Hello from built site!</h1>' > dist/index.html"
+  }
+}
