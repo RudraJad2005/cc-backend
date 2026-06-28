@@ -348,6 +348,61 @@ async function runBackgroundBuild(
   }
 }
 
+// Setup GitHub Webhook Automatically
+router.post('/github/webhook/setup', requireAuth, async (req: AuthenticatedRequest, res: Response): Promise<any> => {
+  const { providerToken, repoFullName } = req.body;
+
+  if (!providerToken || !repoFullName) {
+    return res.status(400).json({ error: 'Missing providerToken or repoFullName' });
+  }
+
+  const baseDomain = process.env.BASE_DOMAIN || 'localhost';
+  const webhookUrl = `https://${baseDomain}/v1/deployments/webhook/github`;
+  const webhookSecret = process.env.GITHUB_WEBHOOK_SECRET;
+
+  if (!webhookSecret) {
+    return res.status(500).json({ error: 'Backend is missing GITHUB_WEBHOOK_SECRET' });
+  }
+
+  try {
+    const response = await fetch(`https://api.github.com/repos/${repoFullName}/hooks`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${providerToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github.v3+json'
+      },
+      body: JSON.stringify({
+        name: 'web',
+        active: true,
+        events: ['push'],
+        config: {
+          url: webhookUrl,
+          content_type: 'json',
+          secret: webhookSecret
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('[GitHub API Error]:', errorData);
+      
+      // If hook already exists, GitHub returns validation error "Hook already exists on this repository"
+      if (errorData.errors && errorData.errors.some((e: any) => e.message?.includes('Hook already exists'))) {
+        return res.status(200).json({ success: true, message: 'Webhook already exists' });
+      }
+
+      return res.status(response.status).json({ error: 'Failed to configure GitHub webhook', details: errorData });
+    }
+
+    return res.status(201).json({ success: true });
+  } catch (err: any) {
+    console.error('[GitHub Webhook Setup Error]:', err);
+    return res.status(500).json({ error: 'Internal server error while configuring webhook' });
+  }
+});
+
 // GitHub webhook receiver
 router.post('/webhook/github', async (req: any, res: Response): Promise<any> => {
   // 1. Verify Webhook Secret if configured
