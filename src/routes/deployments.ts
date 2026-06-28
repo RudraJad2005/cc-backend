@@ -65,7 +65,12 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthenticatedRe
   }
 
   // Retrieve project name or generate one from req.body or filename
-  const projectName = req.body.projectName || path.basename(req.file.originalname, '.zip').replace('.collabcode-deploy', '');
+  const rawProjectName = req.body.projectName || path.basename(req.file.originalname, '.zip').replace('.collabcode-deploy', '');
+  const projectName = rawProjectName.trim().toLowerCase();
+  
+  if (!/^[a-z0-9-]{1,64}$/.test(projectName)) {
+    return res.status(400).json({ error: 'Invalid project name. Must contain only lowercase letters, numbers, and hyphens (max 64 chars).' });
+  }
   const deploymentId = `dpl_${Math.random().toString(36).substring(2, 8)}`;
   const userId = req.user?.id;
   const zipPath = req.file.path;

@@ -17,8 +17,8 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
   const token = authHeader.split(' ')[1];
 
-  // 1. Check for mock/dev token first for quick testing
-  if (token === 'mock-token' || token === 'cc_mock_key_123') {
+  // 1. Check for mock/dev token first for quick testing (Only in dev)
+  if (process.env.NODE_ENV === 'development' && process.env.DEV_MOCK_TOKEN && token === process.env.DEV_MOCK_TOKEN) {
     req.user = {
       id: '00000000-0000-0000-0000-000000000000',
       email: 'dev@collabcode.dev'

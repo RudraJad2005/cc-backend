@@ -39,10 +39,10 @@ app.use(async (req: Request, res: Response, next: NextFunction): Promise<any> =>
   const hostWithoutPort = host.split(':')[0];
   
   let subdomain = null;
-  if (hostWithoutPort.endsWith('.localhost')) {
-    subdomain = hostWithoutPort.replace('.localhost', '');
-  } else if (hostWithoutPort.endsWith('.52.172.229.65.nip.io')) {
-    subdomain = hostWithoutPort.replace('.52.172.229.65.nip.io', '');
+  const baseDomain = process.env.BASE_DOMAIN || 'localhost';
+  
+  if (hostWithoutPort.endsWith(`.${baseDomain}`)) {
+    subdomain = hostWithoutPort.replace(`.${baseDomain}`, '');
   }
   
   if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
@@ -66,6 +66,12 @@ app.use(async (req: Request, res: Response, next: NextFunction): Promise<any> =>
         if (targetPath === '/' || targetPath === '') targetPath = '/index.html';
         
         const fullPath = path.join(route.target, targetPath);
+        
+        // Prevent path traversal attacks
+        if (!fullPath.startsWith(path.resolve(route.target))) {
+          return res.status(403).send('Forbidden: Invalid path');
+        }
+
         if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
            return res.sendFile(fullPath);
         } else if (fs.existsSync(fullPath + '.html')) {
