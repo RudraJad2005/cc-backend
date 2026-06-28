@@ -1,3 +1,4 @@
+import { env } from './env';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
