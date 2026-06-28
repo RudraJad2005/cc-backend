@@ -6,47 +6,80 @@ import crypto from 'crypto';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth';
 import { handleBuild } from '../utils/build';
 import { supabase } from '../utils/supabase';
+import { logger } from '../logger';
 
 const router = Router();
 
-// --- BUILD QUEUE SYSTEM ---
+// --- PERSISTENT BUILD QUEUE SYSTEM (Supabase-backed) ---
 interface QueueTask {
   deploymentId: string;
   run: () => Promise<void>;
 }
 
-const buildQueue: QueueTask[] = [];
+// In-memory runtime queue (tasks are tracked in Supabase `deployments` table via status)
+const runtimeQueue: QueueTask[] = [];
 let activeBuildsCount = 0;
 const MAX_CONCURRENT_BUILDS = 1;
 
 function queueBuild(deploymentId: string, run: () => Promise<void>) {
-  buildQueue.push({ deploymentId, run });
-  console.log(`[Queue] Added deployment ${deploymentId} to build queue. Position: ${buildQueue.length}`);
+  runtimeQueue.push({ deploymentId, run });
+  logger.info({ deploymentId, queueLength: runtimeQueue.length }, '[Queue] Deployment added to build queue');
   processQueue();
 }
 
 async function processQueue() {
   if (activeBuildsCount >= MAX_CONCURRENT_BUILDS) {
-    console.log(`[Queue] Max concurrent builds reached (${activeBuildsCount}/${MAX_CONCURRENT_BUILDS}). Waiting...`);
+    logger.info({ active: activeBuildsCount, max: MAX_CONCURRENT_BUILDS }, '[Queue] Max concurrent builds reached. Waiting...');
     return;
   }
 
-  const nextTask = buildQueue.shift();
+  const nextTask = runtimeQueue.shift();
   if (!nextTask) {
     return;
   }
 
   activeBuildsCount++;
-  console.log(`[Queue] Starting build for ${nextTask.deploymentId}. Active builds: ${activeBuildsCount}`);
+  logger.info({ deploymentId: nextTask.deploymentId, active: activeBuildsCount }, '[Queue] Starting build');
   
   try {
     await nextTask.run();
   } catch (err: any) {
-    console.error(`[Queue] Error running build ${nextTask.deploymentId}:`, err);
+    logger.error({ deploymentId: nextTask.deploymentId, error: err.message }, '[Queue] Build error');
   } finally {
     activeBuildsCount--;
-    console.log(`[Queue] Finished build ${nextTask.deploymentId}. Active builds: ${activeBuildsCount}`);
+    logger.info({ deploymentId: nextTask.deploymentId, active: activeBuildsCount }, '[Queue] Build finished');
     processQueue();
+  }
+}
+
+// Recover interrupted builds on server startup
+// Marks any 'Building' or 'Queued' deployments as 'Error (Server Restarted)'
+export async function recoverQueue() {
+  try {
+    const { data: staleBuilds, error } = await supabase
+      .from('deployments')
+      .select('id, status')
+      .in('status', ['Queued', 'Building']);
+
+    if (error) {
+      logger.warn({ error: error.message }, '[Queue Recovery] Failed to query stale builds');
+      return;
+    }
+
+    if (staleBuilds && staleBuilds.length > 0) {
+      logger.warn({ count: staleBuilds.length }, '[Queue Recovery] Found interrupted builds, marking as failed');
+      
+      for (const build of staleBuilds) {
+        await supabase
+          .from('deployments')
+          .update({ status: 'Error', build_logs: 'Build interrupted by server restart. Please redeploy.' })
+          .eq('id', build.id);
+      }
+    } else {
+      logger.info('[Queue Recovery] No interrupted builds found');
+    }
+  } catch (err: any) {
+    logger.warn({ error: err.message }, '[Queue Recovery] Recovery check failed (non-fatal)');
   }
 }
 // --------------------------
@@ -266,7 +299,7 @@ async function runBackgroundBuild(
   let buildLogs = '';
   const logStream = (message: string) => {
     buildLogs += `[LOG] ${message}`;
-    console.log(`[GitHub Build ${deploymentId}] ${message.trim()}`);
+    logger.info(`[GitHub Build ${deploymentId}] ${message.trim()}`);
   };
 
   const zipPath = path.join(__dirname, '..', '..', 'uploads', `git-${deploymentId}.zip`);
@@ -386,7 +419,7 @@ router.post('/github/webhook/setup', requireAuth, async (req: AuthenticatedReque
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('[GitHub API Error]:', errorData);
+      logger.error('[GitHub API Error]:', errorData);
       
       // If hook already exists, GitHub returns validation error "Hook already exists on this repository"
       if (errorData.errors && errorData.errors.some((e: any) => e.message?.includes('Hook already exists'))) {
@@ -398,7 +431,7 @@ router.post('/github/webhook/setup', requireAuth, async (req: AuthenticatedReque
 
     return res.status(201).json({ success: true });
   } catch (err: any) {
-    console.error('[GitHub Webhook Setup Error]:', err);
+    logger.error('[GitHub Webhook Setup Error]:', err);
     return res.status(500).json({ error: 'Internal server error while configuring webhook' });
   }
 });
@@ -411,7 +444,7 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
     const signature = req.headers['x-hub-signature-256'] as string;
     const rawBody = req.rawBody;
     if (!signature || !rawBody || !verifySignature(secret, rawBody, signature)) {
-      console.warn('[Webhook] Signature verification failed');
+      logger.warn('[Webhook] Signature verification failed');
       return res.status(401).json({ error: 'Invalid signature' });
     }
   }
@@ -428,7 +461,7 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
     return res.status(400).json({ error: 'Missing repository full name' });
   }
 
-  console.log(`[Webhook] Push event received for repo: ${repoFullName}, branch: ${branch}, commit: ${commitSha}`);
+  logger.info(`[Webhook] Push event received for repo: ${repoFullName}, branch: ${branch}, commit: ${commitSha}`);
 
   try {
     // 3. Query all projects to find connected ones
@@ -437,7 +470,7 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
       .select('*');
 
     if (projectsError) {
-      console.error('[Webhook] Error fetching projects:', projectsError);
+      logger.error({ error: projectsError }, '[Webhook] Error fetching projects');
       return res.status(500).json({ error: 'Database error fetching projects' });
     }
 
@@ -460,11 +493,11 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
     });
 
     if (!project) {
-      console.log(`[Webhook] No connected project found for repo: ${repoFullName}`);
+      logger.info(`[Webhook] No connected project found for repo: ${repoFullName}`);
       return res.status(404).json({ error: `No connected project found for repository ${repoFullName}` });
     }
 
-    console.log(`[Webhook] Matching project found: ${project.name} (user: ${project.user_id})`);
+    logger.info(`[Webhook] Matching project found: ${project.name} (user: ${project.user_id})`);
 
     // 5. Generate deployment ID and track in Supabase
     const deploymentId = `dpl_gh_${Math.random().toString(36).substring(2, 8)}`;
@@ -489,7 +522,7 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
       });
 
     if (deployError) {
-      console.error('[Webhook] Failed to track deployment in database:', deployError);
+      logger.error({ error: deployError }, '[Webhook] Failed to track deployment in database');
       return res.status(500).json({ error: 'Failed to create deployment record' });
     }
 
@@ -526,7 +559,7 @@ router.post('/webhook/github', async (req: any, res: Response): Promise<any> => 
     });
 
   } catch (err: any) {
-    console.error('[Webhook] Unexpected error:', err);
+    logger.error('[Webhook] Unexpected error:', err);
     return res.status(500).json({ error: err.message });
   }
 });

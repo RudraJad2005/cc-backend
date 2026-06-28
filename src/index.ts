@@ -4,15 +4,46 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth';
 import deploymentRoutes from './routes/deployments';
+import { recoverQueue } from './routes/deployments';
 import { createProxyMiddleware, fixRequestBody } from 'http-proxy-middleware';
 import { getRoutes } from './utils/routing';
+import { logger } from './logger';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// --- Rate Limiting ---
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' },
+});
+
+const deployLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 10, // 10 deployments per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Deployment rate limit exceeded. Please wait before deploying again.' },
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 30, // 30 webhook events per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Webhook rate limit exceeded.' },
+});
+
+// Apply general rate limit to all /v1 API routes
+app.use('/v1', apiLimiter);
 
 app.use(cors());
 
@@ -106,7 +137,8 @@ app.get('/deployments/:subdomain', async (req: Request, res: Response): Promise<
 
 // API Routes
 app.use('/v1/login', authRoutes);
-app.use('/v1/deployments', deploymentRoutes);
+app.use('/v1/deployments', deployLimiter, deploymentRoutes);
+app.use('/v1/deployments/webhook', webhookLimiter);
 
 // Default API Route
 app.get('/', (req, res) => {
@@ -118,7 +150,10 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`CollabCode PaaS Backend running on http://localhost:${PORT}`);
-  console.log(`Dynamic Routing enabled (e.g. http://[project]-[deploymentId].localhost:${PORT})`);
+app.listen(PORT, async () => {
+  logger.info({ port: PORT }, `CollabCode PaaS Backend running on http://localhost:${PORT}`);
+  logger.info(`Dynamic Routing enabled (e.g. http://[project]-[deploymentId].localhost:${PORT})`);
+  
+  // Recover any builds that were interrupted by a server crash/restart
+  await recoverQueue();
 });

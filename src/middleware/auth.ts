@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import { logger } from '../logger';
 import { supabase } from '../utils/supabase';
 
 // Extend Express Request type to include user information
@@ -53,7 +54,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
     return res.status(401).json({ error: 'Invalid API Token or Session Expired' });
   } catch (err: any) {
-    console.error('Auth middleware error:', err.message);
+    logger.error('Auth middleware error:', err.message);
     return res.status(500).json({ error: 'Internal server error during authentication' });
   }
 }
