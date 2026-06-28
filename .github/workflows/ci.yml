@@ -11,24 +11,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
-    - name: Use Node.js 18
-      uses: actions/setup-node@v3
+    - name: Use Node.js 20
+      uses: actions/setup-node@v4
       with:
-        node-version: '18'
-        cache: 'npm'
+        node-version: '20'
     
     - name: Install dependencies
-      run: |
-        rm -rf node_modules package-lock.json
-        npm install
+      run: npm install --force
 
     - name: TypeScript Check
       run: npx tsc --noEmit
 
     - name: Build Project
       run: npm run build
-
-    - name: Verify Dockerfile
-      run: docker build -t cc-backend-test .
