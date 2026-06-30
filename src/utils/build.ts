@@ -23,7 +23,7 @@ export async function handleBuild(
   projectName: string,
   deploymentId: string,
   onLog: (log: string) => void
-): Promise<{ success: boolean; distPath?: string; error?: string }> {
+): Promise<{ success: boolean; distPath?: string; error?: string; fileSystemTree?: any }> {
   const extractDir = path.join(SOURCE_DIR, `${projectName}-${deploymentId}`);
   const finalDistDir = path.join(DIST_DIR, `${projectName}-${deploymentId}`);
   const subdomain = `${projectName}-${deploymentId}`;
@@ -42,6 +42,34 @@ export async function handleBuild(
         buildSourceDir = singleItemPath;
       }
     }
+
+    // Generate WebContainer FileSystem tree to sync to Supabase
+    onLog('Parsing project file system...\n');
+    const generateFileSystemTree = (dir: string): any => {
+      const tree: any = {};
+      const items = fs.readdirSync(dir);
+      for (const item of items) {
+        if (item === 'node_modules' || item === '.git' || item === '__pycache__') continue;
+        const fullPath = path.join(dir, item);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          tree[item] = { directory: generateFileSystemTree(fullPath) };
+        } else {
+          // Read files under 1MB
+          if (stat.size < 1024 * 1024) {
+            try {
+              const contents = fs.readFileSync(fullPath, 'utf8');
+              tree[item] = { file: { contents } };
+            } catch (e) {
+              // Ignore binary files
+            }
+          }
+        }
+      }
+      return tree;
+    };
+    
+    const fileSystemTree = generateFileSystemTree(buildSourceDir);
 
     const packageJsonPath = path.join(buildSourceDir, 'package.json');
     
@@ -89,7 +117,7 @@ CMD ["npm", "start"]
       
       onLog('Deployment complete! Your API/App is live.\n');
       
-      return { success: true };
+      return { success: true, fileSystemTree };
     } 
     // Static File Route (Fallback)
     else {
@@ -101,7 +129,7 @@ CMD ["npm", "start"]
       setRoute(subdomain, finalDistDir, 'static');
 
       onLog('Static deployment complete!\n');
-      return { success: true, distPath: finalDistDir };
+      return { success: true, distPath: finalDistDir, fileSystemTree };
     }
 
   } catch (err: any) {

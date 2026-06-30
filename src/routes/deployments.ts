@@ -233,12 +233,19 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthenticatedRe
           const buildResult = await handleBuild(zipPath, projectName, deploymentId, logStream);
 
           if (buildResult.success) {
-            // Update deployment status to Ready in Supabase
+            // Update deployment status and project file system in Supabase
             try {
               await supabase
                 .from('deployments')
                 .update({ status: 'Ready' })
                 .eq('id', deploymentId);
+                
+              if (buildResult.fileSystemTree) {
+                await supabase
+                  .from('projects')
+                  .update({ file_system: buildResult.fileSystemTree })
+                  .eq('name', projectName);
+              }
             } catch (dbErr) {
               // Ignored
             }
