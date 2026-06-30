@@ -93,12 +93,14 @@ if (!fs.existsSync(uploadDir)) {
 const upload = multer({ dest: uploadDir });
 
 router.post('/', requireAuth, upload.single('file'), async (req: AuthenticatedRequest, res: Response): Promise<any> => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
+  const githubUrl = req.body.githubUrl;
+  
+  if (!req.file && !githubUrl) {
+    return res.status(400).json({ error: 'No file uploaded and no GitHub URL provided' });
   }
 
   // Retrieve project name or generate one from req.body or filename
-  const rawProjectName = req.body.projectName || path.basename(req.file.originalname, '.zip').replace('.collabcode-deploy', '');
+  const rawProjectName = req.body.projectName || (req.file ? path.basename(req.file.originalname, '.zip').replace('.collabcode-deploy', '') : 'repo');
   const projectName = rawProjectName.trim().toLowerCase();
   
   if (!/^[a-z0-9-]{1,64}$/.test(projectName)) {
@@ -106,7 +108,7 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthenticatedRe
   }
   const deploymentId = `dpl_${Math.random().toString(36).substring(2, 8)}`;
   const userId = req.user?.id;
-  const zipPath = req.file.path;
+  let zipPath = req.file?.path || '';
 
   // Set up chunked response for streaming build logs
   res.writeHead(200, {
@@ -142,6 +144,20 @@ router.post('/', requireAuth, upload.single('file'), async (req: AuthenticatedRe
   };
 
   try {
+    // Download GitHub zipball if a URL was provided instead of a file
+    if (githubUrl) {
+      logStream(`Fetching repository from GitHub: ${githubUrl}...\n`);
+      const githubRes = await fetch(githubUrl);
+      if (!githubRes.ok) {
+         throw new Error(`GitHub returned status ${githubRes.status} for ${githubUrl}`);
+      }
+      const arrayBuffer = await githubRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      zipPath = path.join(uploadDir, `${deploymentId}.zip`);
+      fs.writeFileSync(zipPath, buffer);
+      logStream(`Repository successfully downloaded.\n`);
+    }
+
     // 1. Create or verify the project in Supabase
     let project = null;
     try {
